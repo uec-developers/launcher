@@ -62,49 +62,210 @@ Start the frontend:
 npm run dev
 ```
 
-## VPS/Production Deployment
 
-1. SSH into your server and prep the system:
-   ```bash
-   sudo apt update && sudo apt upgrade -y
-   curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-   sudo apt-get install -y nodejs
-   sudo npm install -g pm2
-   sudo apt install nginx -y
-   ```
-2. Clone the repo to `/var/www`:
-   ```bash
-   cd /var/www
-   git clone https://github.com/uec-developers/launcher.git
-   cd launcher
-   ```
-3. Edit `.env` in `/var/www/launcher` and set your secrets.
-4. Install dependencies:
-   ```bash
-   npm install
-   ```
-5. Build the frontend:
-   ```bash
-   npm run build
-   ```
-6. (Optional) Test backend manually:
-   ```bash
-   npm run server
-   ```
-7. Set up systemd services for auto-start (see DEPLOYMENT_GUIDE.md for full details).
-8. Set up nginx for your domain and SSL (see DEPLOYMENT_GUIDE.md).
-9. Launcher access:
-   - Frontend: `https://your-domain.com/`
-   - API: `https://your-domain.com/api/`
-10. Automatic updates:
-    - Edit root crontab:
-      ```bash
-      sudo crontab -e
-      ```
-    - Add this to update every hour:
-      ```bash
-      0 * * * * cd /var/www/launcher && git pull origin main && npm install && npm run build
-      ```
+## VPS/Production Deployment (Full Guide)
+
+### 1. Install All Dependencies
+
+```bash
+sudo apt update && sudo apt upgrade -y
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs git nginx sqlite3
+sudo npm install -g pm2
+sudo apt install certbot python3-certbot-nginx ufw -y
+```
+
+### 2. Clone the Repository
+
+```bash
+cd /var/www
+git clone https://github.com/uec-developers/launcher.git
+cd launcher
+```
+
+### 3. Environment Setup
+
+Edit `.env` in `/var/www/launcher` and set your secrets:
+
+```env
+SENDGRID_API_KEY=your_sendgrid_api_key
+SENDGRID_FROM_EMAIL=your_verified_sender_email
+JWT_SECRET=your_very_secure_random_string_here
+DATABASE_URL=./data/database.sqlite
+PORT=3001
+FRONTEND_URL=https://your-domain.com
+```
+
+### 4. Install Node.js Dependencies
+
+```bash
+npm install
+```
+
+### 5. Build the Frontend
+
+```bash
+npm run build
+```
+
+### 6. Database & Data Directory
+
+```bash
+mkdir -p ./data
+```
+
+### 7. PM2 Process Manager (Recommended)
+
+Create `ecosystem.config.js`:
+
+```js
+module.exports = {
+  apps: [{
+    name: 'uec-launcher',
+    script: 'server/index.js',
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: '1G',
+    env: {
+      NODE_ENV: 'production',
+      PORT: 3001
+    }
+  }]
+}
+```
+
+Start and enable on boot:
+
+```bash
+pm2 start ecosystem.config.js
+pm2 save
+pm2 startup
+```
+
+### 8. Nginx Reverse Proxy Setup
+
+Create `/etc/nginx/sites-available/uec-launcher`:
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com www.your-domain.com;
+
+    location / {
+        root /var/www/launcher/dist;
+        try_files $uri $uri/ /index.html;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header X-Content-Type-Options "nosniff" always;
+    }
+
+    location /api {
+        proxy_pass http://localhost:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    location /ws {
+        proxy_pass http://localhost:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /clients {
+        root /var/www/launcher/public;
+        try_files $uri $uri/ =404;
+    }
+}
+```
+
+Enable and restart nginx:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/uec-launcher /etc/nginx/sites-enabled/
+sudo rm /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+### 9. SSL with Certbot
+
+```bash
+sudo certbot --nginx -d your-domain.com -d www.your-domain.com
+sudo systemctl enable certbot.timer
+```
+
+### 10. Firewall (UFW)
+
+```bash
+sudo ufw enable
+sudo ufw allow ssh
+sudo ufw allow 'Nginx Full'
+sudo ufw status
+```
+
+### 11. Systemd Alternative (Optional)
+
+If you prefer systemd over PM2, create a service file:
+
+```bash
+sudo nano /etc/systemd/system/uec-launcher.service
+```
+
+Paste:
+
+```
+[Unit]
+Description=UEC Launcher Node.js Backend
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/launcher
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable uec-launcher
+sudo systemctl start uec-launcher
+sudo systemctl status uec-launcher
+```
+
+### 12. DNS Setup
+
+Point your domain's A record to your VPS IP address.
+
+### 13. Automatic Updates (Optional)
+
+```bash
+sudo crontab -e
+# Add:
+0 * * * * cd /var/www/launcher && git pull origin main && npm install && npm run build
+```
+
+### 14. Backup (Recommended)
+
+See `DEPLOYMENT_GUIDE.md` for a backup script and more advanced options.
 
 ## API Endpoints
 
