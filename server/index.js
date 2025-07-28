@@ -77,32 +77,8 @@ const requireAdmin = (req, res, next) => {
   next()
 }
 
-// Send email function
-const sendEmail = async (to, subject, content) => {
-  try {
-    const response = await fetch('https://hooks.jdoodle.net/proxy?url=https://api.sendgrid.com/v3/mail/send', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        personalizations: [{
-          to: [{ email: to }],
-          subject: subject
-        }],
-        from: { email: process.env.SENDGRID_FROM_EMAIL || 'noreply@uec.com' },
-        content: [{
-          type: 'text/plain',
-          value: content
-        }]
-      })
-    })
-    return response.ok
-  } catch (error) {
-    console.error('Email send error:', error)
-    return false
-  }
-}
+// Use sendMail from mail.js for all email sending
+const { sendMail } = require('./mail');
 
 // Auth routes
 app.post('/api/auth/register', async (req, res) => {
@@ -167,7 +143,12 @@ app.post('/api/auth/forgot-password', (req, res) => {
     }
 
     const resetToken = Math.random().toString(36).substring(2, 15)
-    const emailSent = await sendEmail(email, 'Password Reset', `Your reset token: ${resetToken}`)
+    const emailSent = await sendMail({
+      to: email,
+      subject: 'Password Reset',
+      text: `Your reset token: ${resetToken}`,
+      from: process.env.SENDGRID_FROM_EMAIL
+    });
     
     if (emailSent) {
       res.json({ message: 'Password reset email sent' })
