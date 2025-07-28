@@ -1,4 +1,6 @@
-const  API_BASE = 'http://localhost:3001/api'
+const  API_BASE = process.env.NODE_ENV === 'production' 
+  ? `http://${window.location.hostname}:3001/api`
+  : 'http://localhost:3001/api'  
 
 export const chatAPI = {
   getMessages: async (limit = 50) => {
@@ -31,7 +33,10 @@ export const chatAPI = {
   },
 
   connectWebSocket: (onMessage, onUserStatusChange) => {
-    const ws = new WebSocket('ws://localhost:3001')
+    const wsHost = process.env.NODE_ENV === 'production' 
+      ? `ws://${window.location.hostname}:3001`
+      : 'ws://localhost:3001' 
+    const ws = new WebSocket(wsHost) 
     
     ws.onopen = () => {
       const token = localStorage.getItem('token')
