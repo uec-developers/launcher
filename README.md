@@ -1,3 +1,82 @@
+## Mail System Setup
+
+This project uses a custom mail queue with Redis and your own SMTP server (no third-party API). Outgoing mail is enqueued by the backend and sent by a mail worker.
+
+### 1. Install Redis and SMTP
+
+```bash
+sudo apt install redis-server -y
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
+sudo apt install msmtp -y   # or postfix
+```
+
+Configure your SMTP server (e.g. msmtp or postfix) to allow local mail relay. For msmtp, edit `/etc/msmtprc` as needed.
+
+### 2. Configure .env
+
+
+### 2. Configure .env and Create Admin Account
+
+Use the interactive setup script to generate your `.env` file (mail system, domain, Redis, SMTP) and create an admin user:
+
+```bash
+cd server
+node setup.js
+```
+
+The script will prompt for:
+- Your domain (for the frontend)
+- SMTP server details (host, port, username, password, sender email)
+- Redis URL
+- JWT secret
+- Admin username, email, and password
+
+It will create `.env` and the admin user in the database automatically.
+
+**Note:** Setting up systemd services and nginx must be done manually (see below).
+
+### 3. Start the Mail Worker
+
+```bash
+cd server
+node mailWorker.js
+# Or run as a systemd service (see below)
+```
+
+### 4. Systemd Service for Mail Worker
+
+```bash
+sudo nano /etc/systemd/system/uec-mail-worker.service
+```
+
+Paste:
+
+```
+[Unit]
+Description=UEC Launcher Mail Worker
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/launcher/server
+EnvironmentFile=/var/www/launcher/.env
+ExecStart=/usr/bin/node mailWorker.js
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable uec-mail-worker
+sudo systemctl start uec-mail-worker
+sudo systemctl status uec-mail-worker
+```
 
 
 
@@ -63,16 +142,14 @@ npm run dev
 ```
 
 
-## VPS/Production Deployment (Full Guide)
 
-### 1. Install All Dependencies
+## VPS/Production Deployment (Systemd Only, No PM2)
+
+### 1. Prepare Your VPS
 
 ```bash
 sudo apt update && sudo apt upgrade -y
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt-get install -y nodejs git nginx sqlite3
-sudo npm install -g pm2
-sudo apt install certbot python3-certbot-nginx ufw -y
+sudo apt install -y nodejs npm git nginx sqlite3 certbot python3-certbot-nginx ufw
 ```
 
 ### 2. Clone the Repository
@@ -83,17 +160,94 @@ git clone https://github.com/uec-developers/launcher.git
 cd launcher
 ```
 
+
 ### 3. Environment Setup
 
-Edit `.env` in `/var/www/launcher` and set your secrets:
+Edit `.env` in `/var/www/launcher` and set all required secrets:
 
 ```env
-SENDGRID_API_KEY=your_sendgrid_api_key
-SENDGRID_FROM_EMAIL=your_verified_sender_email
+# JWT and App
 JWT_SECRET=your_very_secure_random_string_here
 DATABASE_URL=./data/database.sqlite
 PORT=3001
 FRONTEND_URL=https://your-domain.com
+
+# Redis (for mail queue)
+REDIS_URL=redis://localhost:6379
+
+# SMTP (for outgoing mail)
+SMTP_HOST=localhost
+SMTP_PORT=25
+# If using authentication:
+# SMTP_USER=your_smtp_user
+# SMTP_PASS=your_smtp_password
+SMTP_FROM_EMAIL=noreply@yourdomain.com
+```
+### 4. Install Redis and SMTP Server
+
+Install Redis:
+```bash
+sudo apt install redis-server -y
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
+```
+
+Install a local SMTP server (choose one):
+
+- For simple local delivery (recommended for most VPS):
+  ```bash
+  sudo apt install msmtp -y
+  # Or use postfix: sudo apt install postfix -y
+  ```
+
+Configure your SMTP server to allow local mail relay. For msmtp, edit `/etc/msmtprc` as needed.
+
+Test Redis:
+```bash
+redis-cli ping
+# Should return PONG
+```
+### 6. Start the Mail Worker
+
+The backend enqueues outgoing mail to Redis. You must run the mail worker to process and send emails:
+
+```bash
+cd /var/www/launcher/server
+node mailWorker.js
+```
+
+For production, run the mail worker as a systemd service:
+
+```bash
+sudo nano /etc/systemd/system/uec-mail-worker.service
+```
+
+Paste:
+
+```
+[Unit]
+Description=UEC Launcher Mail Worker
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/launcher/server
+EnvironmentFile=/var/www/launcher/.env
+ExecStart=/usr/bin/node mailWorker.js
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable uec-mail-worker
+sudo systemctl start uec-mail-worker
+sudo systemctl status uec-mail-worker
 ```
 
 ### 4. Install Node.js Dependencies
@@ -114,33 +268,68 @@ npm run build
 mkdir -p ./data
 ```
 
-### 7. PM2 Process Manager (Recommended)
+### 7. Systemd Services (Backend & Frontend)
 
-Create `ecosystem.config.js`:
-
-```js
-module.exports = {
-  apps: [{
-    name: 'uec-launcher',
-    script: 'server/index.js',
-    instances: 1,
-    autorestart: true,
-    watch: false,
-    max_memory_restart: '1G',
-    env: {
-      NODE_ENV: 'production',
-      PORT: 3001
-    }
-  }]
-}
-```
-
-Start and enable on boot:
+Create the backend service:
 
 ```bash
-pm2 start ecosystem.config.js
-pm2 save
-pm2 startup
+sudo nano /etc/systemd/system/uec-launcher-backend.service
+```
+
+Paste:
+
+```
+[Unit]
+Description=UEC Launcher Backend
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/launcher
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Create the frontend service:
+
+```bash
+sudo nano /etc/systemd/system/uec-launcher-frontend.service
+```
+
+Paste:
+
+```
+[Unit]
+Description=UEC Launcher Frontend
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/launcher
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm run preview
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start both:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable uec-launcher-backend
+sudo systemctl enable uec-launcher-frontend
+sudo systemctl start uec-launcher-backend
+sudo systemctl start uec-launcher-frontend
+sudo systemctl status uec-launcher-backend
+sudo systemctl status uec-launcher-frontend
 ```
 
 ### 8. Nginx Reverse Proxy Setup
@@ -153,44 +342,23 @@ server {
     server_name your-domain.com www.your-domain.com;
 
     location / {
-        root /var/www/launcher/dist;
-        try_files $uri $uri/ /index.html;
-        add_header X-Frame-Options "SAMEORIGIN" always;
-        add_header X-XSS-Protection "1; mode=block" always;
-        add_header X-Content-Type-Options "nosniff" always;
-    }
-
-    location /api {
-        proxy_pass http://localhost:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-    }
-
-    location /ws {
-        proxy_pass http://localhost:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
+        proxy_pass http://localhost:4173;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
-
-    location /clients {
-        root /var/www/launcher/public;
-        try_files $uri $uri/ =404;
+    location /api/ {
+        proxy_pass http://localhost:3001/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
 
-Enable and restart nginx:
+Enable config and restart nginx:
 
 ```bash
 sudo ln -s /etc/nginx/sites-available/uec-launcher /etc/nginx/sites-enabled/
@@ -215,47 +383,11 @@ sudo ufw allow 'Nginx Full'
 sudo ufw status
 ```
 
-### 11. Systemd Alternative (Optional)
-
-If you prefer systemd over PM2, create a service file:
-
-```bash
-sudo nano /etc/systemd/system/uec-launcher.service
-```
-
-Paste:
-
-```
-[Unit]
-Description=UEC Launcher Node.js Backend
-After=network.target
-
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=/var/www/launcher
-Environment=NODE_ENV=production
-ExecStart=/usr/bin/node server/index.js
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable uec-launcher
-sudo systemctl start uec-launcher
-sudo systemctl status uec-launcher
-```
-
-### 12. DNS Setup
+### 11. DNS Setup
 
 Point your domain's A record to your VPS IP address.
 
-### 13. Automatic Updates (Optional)
+### 12. Automatic Updates (Optional)
 
 ```bash
 sudo crontab -e
@@ -263,9 +395,13 @@ sudo crontab -e
 0 * * * * cd /var/www/launcher && git pull origin main && npm install && npm run build
 ```
 
-### 14. Backup (Recommended)
+### 13. Backup (Recommended)
 
 See `DEPLOYMENT_GUIDE.md` for a backup script and more advanced options.
+
+---
+
+**Note:** This project uses a custom mail system built from scratch. All outgoing mail is enqueued to Redis and sent via your own SMTP server (Postfix, msmtp, etc). No third-party mail API is used. You can further customize mail logic in `server/mail.js` and `server/mailWorker.js`.
 
 ## API Endpoints
 
